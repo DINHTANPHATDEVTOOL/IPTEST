@@ -1640,6 +1640,12 @@ class IPhoneActivationApp(tk.Tk):
 
     def _worker_android_discover(self) -> None:
         try:
+            from .android import check_adb_installed
+            if not check_adb_installed():
+                self.events.put(("log", "Lỗi: Không tìm thấy công cụ 'adb' trên hệ thống!"))
+                self.events.put(("log", "Hướng dẫn: Vui lòng chạy 'sudo apt install android-tools-adb' trên máy tính."))
+                self.events.put(("operation_error", "Chưa cài đặt ADB!\nVui lòng chạy 'sudo apt install android-tools-adb' trên máy tính để bắt đầu sử dụng Android."))
+                return
             devices = discover_android_devices()
             self.events.put(("android_discover_done", devices))
         except Exception as exc:
