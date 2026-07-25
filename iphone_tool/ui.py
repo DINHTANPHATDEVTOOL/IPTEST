@@ -10,6 +10,7 @@ from PIL import Image, ImageTk
 import qrcode
 
 from .activation import ActivationStatus, activate, get_activation_state
+from .android import AndroidDeviceInfo, discover_android_devices, bypass_android_setup, install_apk, erase_android
 from .command import run_command
 from .devices import DeviceInfo, discover_devices
 from .erasure import erase_device
@@ -772,7 +773,7 @@ def start_api_server(app_instance):
 class IPhoneActivationApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("iPhone Activation & Control Suite")
+        self.title("iPhone & Android Activation & Control Suite")
         self.geometry("1150x820")
         self.minsize(1100, 720)
         self.configure(bg="#0f172a")
@@ -781,6 +782,8 @@ class IPhoneActivationApp(tk.Tk):
         self.devices: dict[str, DeviceInfo] = {}
         self.states: dict[str, ActivationStatus] = {}
         self.test_results: dict[str, dict] = {}
+        self.android_devices: dict[str, AndroidDeviceInfo] = {}
+        self.android_test_results: dict[str, dict] = {}
         self.busy = False
         
         self.local_ip = get_local_ip()
@@ -791,11 +794,15 @@ class IPhoneActivationApp(tk.Tk):
         self.ipa_path_var = tk.StringVar(value=self.config.get("ipa_path", ""))
         self.wifi_ssid_var = tk.StringVar(value=self.config.get("wifi_ssid", ""))
         self.wifi_password_var = tk.StringVar(value=self.config.get("wifi_password", ""))
+        self.apk_path_var = tk.StringVar(value=self.config.get("apk_path", ""))
+        self.auto_install_android_var = tk.BooleanVar(value=self.config.get("auto_install_android", True))
+        self.auto_erase_android_var = tk.BooleanVar(value=self.config.get("auto_erase_android", False))
 
         self._build_style()
         self._build_ui()
         self.after(150, self._process_events)
         self.after(300, self.refresh_devices)
+        self.after(350, self.refresh_android_devices)
         self.after(3000, self._auto_refresh)
 
         # Khởi động Server API nhận kết quả test ở background và truyền self
@@ -821,6 +828,23 @@ class IPhoneActivationApp(tk.Tk):
             font=("Segoe UI", 10, "bold")
         )
         style.map("Treeview", background=[("selected", "#2563eb")])
+        style.configure(
+            "TNotebook",
+            background="#0f172a",
+            borderwidth=0
+        )
+        style.configure(
+            "TNotebook.Tab",
+            background="#1e293b",
+            foreground="#94a3b8",
+            padding=[20, 8],
+            font=("Segoe UI", 10, "bold")
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", "#2563eb")],
+            foreground=[("selected", "#ffffff")]
+        )
 
     def _create_btn(self, parent: tk.Frame, text: str, bg: str, hover: str, command: callable, state: str = "normal") -> tk.Button:
         btn = tk.Button(
@@ -857,26 +881,39 @@ class IPhoneActivationApp(tk.Tk):
         
         title_frame = tk.Frame(header, bg="#0f172a")
         title_frame.pack(fill="x")
-        tk.Label(title_frame, text="iPhone Activation Suite", bg="#0f172a", fg="#ffffff", font=("Segoe UI", 24, "bold")).pack(side="left")
+        tk.Label(title_frame, text="Universal Device Activation & Control Suite", bg="#0f172a", fg="#ffffff", font=("Segoe UI", 24, "bold")).pack(side="left")
         
         tk.Label(
             header,
-            text=f"Mặc định: iPhone ở màn hình Hello • Cấu hình Wi-Fi tự động và quét QR Code để chẩn đoán nhanh bằng Safari",
+            text=f"Địa chỉ IP máy trạm: {self.local_ip} | Địa chỉ nhận kết quả: {self.web_url}",
             bg="#0f172a",
-            fg="#94a3b8",
-            font=("Segoe UI", 10)
+            fg="#38bdf8",
+            font=("Segoe UI", 10, "bold")
         ).pack(anchor="w", pady=(6, 0))
 
+        # Create Notebook
+        self.notebook = ttk.Notebook(self, style="TNotebook")
+        self.notebook.pack(fill="both", expand=True, padx=28, pady=12)
+
+        # Tab 1: iOS Workstation
+        self.ios_tab = tk.Frame(self.notebook, bg="#0f172a")
+        self.notebook.add(self.ios_tab, text=" iOS Workstation ")
+
+        # Tab 2: Android Workstation
+        self.android_tab = tk.Frame(self.notebook, bg="#0f172a")
+        self.notebook.add(self.android_tab, text=" Android Workstation ")
+
+        # --- BUILD iOS TAB ---
         # Main content area split into Table (Left) and Self-Test Panel (Right)
-        main_pane = tk.Frame(self, bg="#0f172a")
-        main_pane.pack(fill="both", expand=True, padx=28, pady=12)
+        main_pane = tk.Frame(self.ios_tab, bg="#0f172a")
+        main_pane.pack(fill="both", expand=True, pady=12)
         
-        # Right Panel (Self-Test Details) - Pack this first to guarantee its 340px allocation!
+        # Right Panel (Self-Test Details)
         self.right_panel = tk.Frame(main_pane, bg="#1e293b", width=340, highlightbackground="#334155", highlightthickness=1)
         self.right_panel.pack(side="right", fill="both", padx=(16, 0))
         self.right_panel.pack_propagate(False) # Keep fixed width
         
-        # Left Panel (Devices Table) - Packed second to take the rest of space
+        # Left Panel (Devices Table)
         left_panel = tk.Frame(main_pane, bg="#0f172a")
         left_panel.pack(side="left", fill="both", expand=True)
 
@@ -906,12 +943,11 @@ class IPhoneActivationApp(tk.Tk):
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.bind("<<TreeviewSelect>>", lambda _e: self._update_buttons())
 
-        # Build the right panel contents AFTER tree is instantiated to prevent AttributeError
         self._build_right_panel()
 
         # Config Section (IPA Path & Wi-Fi automatic settings)
-        config_frame = tk.Frame(self, bg="#0f172a")
-        config_frame.pack(fill="x", padx=28, pady=(0, 10))
+        config_frame = tk.Frame(self.ios_tab, bg="#0f172a")
+        config_frame.pack(fill="x", pady=(0, 10))
         
         # Row 1: IPA Configuration
         ipa_row = tk.Frame(config_frame, bg="#0f172a")
@@ -935,8 +971,8 @@ class IPhoneActivationApp(tk.Tk):
         self.wifi_password_entry.pack(side="left", padx=10, ipady=3)
 
         # Controls Section
-        controls = tk.Frame(self, bg="#0f172a")
-        controls.pack(fill="x", padx=28, pady=(0, 16))
+        controls = tk.Frame(self.ios_tab, bg="#0f172a")
+        controls.pack(fill="x", pady=(0, 16))
         
         self.refresh_btn = self._create_btn(controls, "Quét lại iPhone", "#475569", "#334155", self.refresh_devices)
         self.refresh_btn.pack(side="left")
@@ -944,7 +980,6 @@ class IPhoneActivationApp(tk.Tk):
         self.activate_btn = self._create_btn(controls, "Active iPhone", "#2563eb", "#1d4ed8", self.start_activation, state="disabled")
         self.activate_btn.pack(side="left", padx=10)
         
-        # New Button: "Cài App Test (.ipa)"
         self.install_app_btn = self._create_btn(controls, "Cài App Test (.ipa)", "#10b981", "#059669", self.install_test_app_selected, state="disabled")
         self.install_app_btn.pack(side="left", padx=(0, 10))
         
@@ -991,7 +1026,10 @@ class IPhoneActivationApp(tk.Tk):
         )
         self.auto_erase_cb.pack(anchor="w")
 
-        # Terminal / Logs Box
+        # --- BUILD ANDROID TAB ---
+        self._build_android_ui()
+
+        # Terminal / Logs Box (Global, below Notebook)
         log_box = tk.Frame(self, bg="#0f172a")
         log_box.pack(fill="x", padx=28, pady=(0, 16))
         
@@ -1019,7 +1057,7 @@ class IPhoneActivationApp(tk.Tk):
         self.log.pack(fill="x")
         self.log.configure(state="disabled")
 
-        # Bottom Status Bar with Indicator Dot
+        # Bottom Status Bar (Global)
         status_frame = tk.Frame(self, bg="#0f172a")
         status_frame.pack(fill="x", side="bottom", padx=28, pady=(0, 16))
         
@@ -1028,6 +1066,206 @@ class IPhoneActivationApp(tk.Tk):
         
         self.status_label = tk.Label(status_frame, text="Đang khởi tạo...", fg="#94a3b8", bg="#0f172a", font=("Segoe UI", 10, "bold"))
         self.status_label.pack(side="left")
+
+    def _build_android_ui(self) -> None:
+        # Main content area split into Android Table (Left) and Android Self-Test Panel (Right)
+        android_main_pane = tk.Frame(self.android_tab, bg="#0f172a")
+        android_main_pane.pack(fill="both", expand=True, pady=12)
+        
+        # Right Panel (Android Self-Test Details)
+        self.android_right_panel = tk.Frame(android_main_pane, bg="#1e293b", width=340, highlightbackground="#334155", highlightthickness=1)
+        self.android_right_panel.pack(side="right", fill="both", padx=(16, 0))
+        self.android_right_panel.pack_propagate(False) # Keep fixed width
+        
+        # Left Panel (Android Devices Table)
+        android_left_panel = tk.Frame(android_main_pane, bg="#0f172a")
+        android_left_panel.pack(side="left", fill="both", expand=True)
+
+        android_table_box = tk.Frame(android_left_panel, bg="#1e293b", highlightbackground="#334155", highlightthickness=1)
+        android_table_box.pack(fill="both", expand=True)
+
+        columns = ("brand", "model", "android_version", "imei", "serial")
+        self.android_tree = ttk.Treeview(android_table_box, columns=columns, show="headings", selectmode="extended")
+        
+        headings = {
+            "brand": "Hãng", "model": "Model", "android_version": "Android", "imei": "IMEI", "serial": "Số Serial (ADB ID)"
+        }
+        widths = {"brand": 130, "model": 150, "android_version": 90, "imei": 150, "serial": 240}
+        for col in columns:
+            self.android_tree.heading(col, text=headings[col])
+            self.android_tree.column(col, width=widths[col], minwidth=60, anchor="w")
+            
+        self.android_tree.pack(side="left", fill="both", expand=True)
+        scroll = ttk.Scrollbar(android_table_box, orient="vertical", command=self.android_tree.yview)
+        scroll.pack(side="right", fill="y")
+        self.android_tree.configure(yscrollcommand=scroll.set)
+        self.android_tree.bind("<<TreeviewSelect>>", lambda _e: self._update_android_buttons())
+
+        self._build_android_right_panel()
+
+        # Config Section (APK Path settings)
+        android_config_frame = tk.Frame(self.android_tab, bg="#0f172a")
+        android_config_frame.pack(fill="x", pady=(0, 10))
+        
+        # Row 1: APK Configuration
+        apk_row = tk.Frame(android_config_frame, bg="#0f172a")
+        apk_row.pack(fill="x", pady=2)
+        tk.Label(apk_row, text="File App Test (.apk):", bg="#0f172a", fg="#94a3b8", font=("Segoe UI", 10, "bold"), width=25, anchor="w").pack(side="left")
+        self.apk_path_entry = tk.Entry(apk_row, textvariable=self.apk_path_var, bg="#1e293b", fg="#f8fafc", insertbackground="white", relief="flat", font=("Segoe UI", 9), width=45)
+        self.apk_path_entry.pack(side="left", padx=10, ipady=3)
+        self.browse_apk_btn = self._create_btn(apk_row, "Chọn File...", "#475569", "#334155", self.browse_apk_file)
+        self.browse_apk_btn.configure(font=("Segoe UI", 9, "bold"), padx=10, pady=4)
+        self.browse_apk_btn.pack(side="left")
+
+        # Controls Section
+        android_controls = tk.Frame(self.android_tab, bg="#0f172a")
+        android_controls.pack(fill="x", pady=(0, 16))
+        
+        self.android_refresh_btn = self._create_btn(android_controls, "Quét lại Android", "#475569", "#334155", self.refresh_android_devices)
+        self.android_refresh_btn.pack(side="left")
+        
+        self.android_activate_btn = self._create_btn(android_controls, "Active/Bypass Setup", "#2563eb", "#1d4ed8", self.start_android_bypass, state="disabled")
+        self.android_activate_btn.pack(side="left", padx=10)
+        
+        self.android_install_app_btn = self._create_btn(android_controls, "Cài App Test (.apk)", "#10b981", "#059669", self.start_android_install, state="disabled")
+        self.android_install_app_btn.pack(side="left", padx=(0, 10))
+        
+        self.android_erase_btn = self._create_btn(android_controls, "Erase về cài đặt gốc", "#dc2626", "#b91c1c", self.start_android_erase, state="disabled")
+        self.android_erase_btn.pack(side="left")
+
+        # Checkboxes column/row
+        android_cb_frame = tk.Frame(android_controls, bg="#0f172a")
+        android_cb_frame.pack(side="left", padx=15)
+
+        self.android_auto_install_cb = tk.Checkbutton(
+            android_cb_frame,
+            text="Tự động cài App Test sau khi Active",
+            variable=self.auto_install_android_var,
+            command=self.save_settings,
+            bg="#0f172a",
+            fg="#e2e8f0",
+            selectcolor="#0f172a",
+            activebackground="#0f172a",
+            activeforeground="#ffffff",
+            font=("Segoe UI", 9, "bold"),
+            relief="flat",
+            borderwidth=0,
+            cursor="hand2"
+        )
+        self.android_auto_install_cb.pack(anchor="w")
+
+        self.android_auto_erase_cb = tk.Checkbutton(
+            android_cb_frame,
+            text="Tự động Erase sau khi test xong",
+            variable=self.auto_erase_android_var,
+            command=self.save_settings,
+            bg="#0f172a",
+            fg="#e2e8f0",
+            selectcolor="#0f172a",
+            activebackground="#0f172a",
+            activeforeground="#ffffff",
+            font=("Segoe UI", 9, "bold"),
+            relief="flat",
+            borderwidth=0,
+            cursor="hand2"
+        )
+        self.android_auto_erase_cb.pack(anchor="w")
+
+    def _build_android_right_panel(self) -> None:
+        for widget in self.android_right_panel.winfo_children():
+            widget.destroy()
+            
+        panel_header = tk.Frame(self.android_right_panel, bg="#0f172a", height=36)
+        panel_header.pack(fill="x")
+        tk.Label(panel_header, text="  KẾT QUẢ KIỂM TRA (SELF-TEST)", bg="#0f172a", fg="#ffffff", font=("Segoe UI", 10, "bold")).pack(side="left", pady=8)
+        
+        self.android_test_content = tk.Frame(self.android_right_panel, bg="#1e293b", padx=12, pady=12)
+        self.android_test_content.pack(fill="both", expand=True)
+        
+        self._update_android_right_panel()
+
+    def _update_android_right_panel(self) -> None:
+        for widget in self.android_test_content.winfo_children():
+            widget.destroy()
+            
+        serials = list(self.android_tree.selection())
+        if not serials:
+            tk.Label(self.android_test_content, text="Vui lòng chọn 1 thiết bị\nđể xem kết quả test.", bg="#1e293b", fg="#94a3b8", font=("Segoe UI", 10), justify="center").pack(expand=True)
+            return
+            
+        if len(serials) > 1:
+            tk.Label(self.android_test_content, text=f"Đang chọn {len(serials)} thiết bị.\nVui lòng chọn duy nhất 1 thiết bị\nđể xem chi tiết.", bg="#1e293b", fg="#94a3b8", font=("Segoe UI", 10), justify="center").pack(expand=True)
+            return
+            
+        serial = serials[0]
+        results = self.android_test_results.get(serial)
+        
+        if not results:
+            tk.Label(self.android_test_content, text="Chưa có dữ liệu kiểm tra.", bg="#1e293b", fg="#e2e8f0", font=("Segoe UI", 11, "bold")).pack(pady=(5, 5))
+            tk.Label(self.android_test_content, text="Hãy mở app test chẩn đoán\ntrên điện thoại Android:", bg="#1e293b", fg="#94a3b8", font=("Segoe UI", 9), justify="center").pack(pady=(0, 6))
+            return
+            
+        # Display Results
+        summary_frame = tk.Frame(self.android_test_content, bg="#1e293b")
+        summary_frame.pack(fill="x", pady=(0, 10))
+        
+        model_name = results.get("model", "Android Device")
+        os_ver = results.get("ios_version", "Android")
+        passed = results.get("passed", 0)
+        failed = results.get("failed", 0)
+        total = results.get("total_tests", 0)
+        
+        tk.Label(summary_frame, text=f"Model: {model_name} ({os_ver})", bg="#1e293b", fg="#ffffff", font=("Segoe UI", 10, "bold"), anchor="w").pack(fill="x")
+        
+        stat_color = "#34d399" if failed == 0 else "#f87171"
+        tk.Label(summary_frame, text=f"Kết quả: {passed}/{total} ĐẠT • {failed} LỖI", bg="#1e293b", fg=stat_color, font=("Segoe UI", 10, "bold"), anchor="w").pack(fill="x", pady=2)
+        
+        # Test List in a Scrollable frame
+        list_canvas = tk.Canvas(self.android_test_content, bg="#1e293b", highlightthickness=0)
+        list_scroll = ttk.Scrollbar(self.android_test_content, orient="vertical", command=list_canvas.yview)
+        scrollable_frame = tk.Frame(list_canvas, bg="#1e293b")
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: list_canvas.configure(scrollregion=list_canvas.bbox("all"))
+        )
+        list_canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        list_canvas.configure(yscrollcommand=list_scroll.set)
+        
+        list_canvas.pack(side="left", fill="both", expand=True)
+        list_scroll.pack(side="right", fill="y")
+        
+        items = results.get("results", [])
+        for item in items:
+            test_id = item.get("test_id", "")
+            status = item.get("status", "")
+            msg = item.get("message", "")
+            
+            item_frame = tk.Frame(scrollable_frame, bg="#1e293b", pady=4)
+            item_frame.pack(fill="x", expand=True)
+            
+            color = "#34d399" if status in ("PASS", "GUIDED PASS") else "#f87171" if status == "FAIL" else "#94a3b8"
+            tk.Label(item_frame, text=f"■ {test_id}: {status}", bg="#1e293b", fg=color, font=("Segoe UI", 9, "bold"), anchor="w").pack(fill="x")
+            if msg:
+                tk.Label(item_frame, text=f"  {msg}", bg="#1e293b", fg="#94a3b8", font=("Segoe UI", 8), anchor="w").pack(fill="x")
+
+    def _update_android_buttons(self) -> None:
+        selected = list(self.android_tree.selection())
+        state = "normal" if selected and not self.busy else "disabled"
+        self._set_btn_state(self.android_activate_btn, state, "#2563eb")
+        self._set_btn_state(self.android_install_app_btn, state, "#10b981")
+        self._set_btn_state(self.android_erase_btn, state, "#dc2626")
+        self._update_android_right_panel()
+
+    def browse_apk_file(self) -> None:
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(
+            title="Chọn file App Test (.apk)",
+            filetypes=[("APK files", "*.apk")]
+        )
+        if path:
+            self.apk_path_var.set(path)
+            self.save_settings()
 
     def _set_btn_state(self, btn: tk.Button, state: str, normal_bg: str) -> None:
         btn.configure(state=state)
@@ -1248,6 +1486,9 @@ class IPhoneActivationApp(tk.Tk):
         self.config["wifi_password"] = self.wifi_password_var.get()
         self.config["auto_install"] = self.auto_install_var.get()
         self.config["auto_erase"] = self.auto_erase_var.get()
+        self.config["apk_path"] = self.apk_path_var.get()
+        self.config["auto_install_android"] = self.auto_install_android_var.get()
+        self.config["auto_erase_android"] = self.auto_erase_android_var.get()
         save_config(self.config)
 
     def clear_logs(self) -> None:
@@ -1391,6 +1632,92 @@ class IPhoneActivationApp(tk.Tk):
             
         threading.Thread(target=worker, daemon=True).start()
 
+    def refresh_android_devices(self) -> None:
+        if self.busy:
+            return
+        self._update_status("Đang quét Android qua ADB...", "scanning")
+        threading.Thread(target=self._worker_android_discover, daemon=True).start()
+
+    def _worker_android_discover(self) -> None:
+        try:
+            devices = discover_android_devices()
+            self.events.put(("android_discover_done", devices))
+        except Exception as exc:
+            self.events.put(("error", f"Lỗi quét thiết bị Android: {exc}"))
+
+    def start_android_bypass(self) -> None:
+        serials = list(self.android_tree.selection())
+        if not serials:
+            return
+        serial = serials[0]
+        self._set_busy(True, f"Đang bypass Setup cho Android {serial}...")
+        self._append_log(f"Bắt đầu bypass Setup cho thiết bị Android: {serial}")
+
+        def worker() -> None:
+            try:
+                success, msg = bypass_android_setup(serial)
+                
+                # Check auto-install checkbox for Android
+                if success and self.auto_install_android_var.get():
+                    apk = self.apk_path_var.get()
+                    if apk:
+                        self.events.put(("log", f"Tự động cài đặt app test (.apk) cho {serial}..."))
+                        inst_ok, inst_msg = install_apk(serial, apk)
+                        msg += f"\n[Auto-Install] {inst_msg}"
+                
+                self.events.put(("android_bypass_done", (serial, success, msg)))
+            except Exception as e:
+                self.events.put(("android_bypass_done", (serial, False, str(e))))
+                
+        threading.Thread(target=worker, daemon=True).start()
+
+    def start_android_install(self) -> None:
+        serials = list(self.android_tree.selection())
+        if not serials:
+            return
+        serial = serials[0]
+        apk_path = self.apk_path_var.get()
+        if not apk_path:
+            messagebox.showwarning("Thiếu APK", "Vui lòng chọn đường dẫn file .apk ở dòng cấu hình trước!")
+            return
+        self._set_busy(True, f"Đang cài app test lên Android {serial}...")
+        self._append_log(f"Bắt đầu cài đặt app {apk_path} lên {serial}...")
+
+        def worker() -> None:
+            try:
+                success, msg = install_apk(serial, apk_path)
+                self.events.put(("android_install_done", (serial, success, msg)))
+            except Exception as e:
+                self.events.put(("android_install_done", (serial, False, str(e))))
+                
+        threading.Thread(target=worker, daemon=True).start()
+
+    def start_android_erase(self) -> None:
+        serials = list(self.android_tree.selection())
+        if not serials:
+            return
+        serial = serials[0]
+        confirm = messagebox.askyesno("Xác nhận Format", f"Bạn có chắc chắn muốn khôi phục cài đặt gốc thiết bị Android {serial}?")
+        if not confirm:
+            return
+        self.start_android_erase_single(serial)
+
+    def start_android_erase_single(self, serial: str) -> None:
+        self._set_busy(True, f"Đang gửi lệnh Erase cho Android {serial}...")
+        self._append_log(f"Đang gửi lệnh Erase cho thiết bị Android: {serial}")
+
+        def worker() -> None:
+            try:
+                success, msg = erase_android(serial)
+                if success:
+                    # Clear test results for this device
+                    self.android_test_results.pop(serial, None)
+                self.events.put(("android_erase_done", (serial, success, msg)))
+            except Exception as e:
+                self.events.put(("android_erase_done", (serial, False, str(e))))
+                
+        threading.Thread(target=worker, daemon=True).start()
+
     def _process_events(self) -> None:
         try:
             while True:
@@ -1452,14 +1779,76 @@ class IPhoneActivationApp(tk.Tk):
                     data = event[1]
                     udid = data.get("udid")
                     if udid:
-                        self.test_results[udid] = data
-                        self._append_log(f"Đã nhận kết quả tự kiểm tra (Self-Test) cho thiết bị {udid}!")
-                        self._update_right_panel()
-                        
-                        # Tự động gửi lệnh xóa nếu tùy chọn được bật
-                        if self.auto_erase_var.get():
-                            self._append_log(f"[Auto-Erase] Phát hiện chế độ Tự Động Erase đang bật. Bắt đầu xóa {udid}...")
-                            self.auto_erase_device(udid)
+                        is_android = udid in self.android_devices
+                        if not is_android:
+                            model_lower = str(data.get("model", "")).lower()
+                            version_lower = str(data.get("ios_version", "")).lower()
+                            if "android" in version_lower or "android" in model_lower:
+                                is_android = True
+                                
+                        if is_android:
+                            self.android_test_results[udid] = data
+                            self._append_log(f"Đã nhận kết quả tự kiểm tra (Self-Test) cho Android {udid}!")
+                            self._update_android_right_panel()
+                            
+                            # Tự động gửi lệnh xóa nếu tùy chọn được bật
+                            if self.auto_erase_android_var.get():
+                                self._append_log(f"[Auto-Erase] Phát hiện chế độ Tự Động Erase Android đang bật. Bắt đầu xóa {udid}...")
+                                self.start_android_erase_single(udid)
+                        else:
+                            self.test_results[udid] = data
+                            self._append_log(f"Đã nhận kết quả tự kiểm tra (Self-Test) cho iPhone {udid}!")
+                            self._update_right_panel()
+                            
+                            # Tự động gửi lệnh xóa nếu tùy chọn được bật
+                            if self.auto_erase_var.get():
+                                self._append_log(f"[Auto-Erase] Phát hiện chế độ Tự Động Erase đang bật. Bắt đầu xóa {udid}...")
+                                self.auto_erase_device(udid)
+                elif kind == "android_discover_done":
+                    devices = event[1]
+                    previous = list(self.android_tree.selection())
+                    self.android_devices = {d.serial: d for d in devices}
+                    for item in self.android_tree.get_children():
+                        self.android_tree.delete(item)
+                    for device in devices:
+                        self.android_tree.insert("", "end", iid=device.serial, values=(device.brand, device.model, device.android_version, device.imei, device.serial))
+                    
+                    if previous:
+                        still_present = [s for s in previous if s in self.android_devices]
+                        if still_present:
+                            self.android_tree.selection_set(still_present)
+                    elif devices:
+                        self.android_tree.selection_set(devices[0].serial)
+                    
+                    msg = f"Đã nhận {len(devices)} thiết bị Android." if devices else "Không phát hiện thiết bị Android qua USB."
+                    self._update_status(msg, "idle" if devices else "error")
+                    self._update_android_buttons()
+                elif kind == "android_bypass_done":
+                    serial, success, msg = event[1]
+                    self._set_busy(False, msg)
+                    self._append_log(f"Active Android {serial}: {msg}")
+                    self.refresh_android_devices()
+                    if success:
+                        messagebox.showinfo("Kích hoạt Android", f"Đã bypass màn hình Setup cho thiết bị {serial} thành công!")
+                    else:
+                        messagebox.showerror("Kích hoạt Android thất bại", f"Lỗi: {msg}")
+                elif kind == "android_install_done":
+                    serial, success, msg = event[1]
+                    self._set_busy(False, msg)
+                    self._append_log(f"Cài đặt app test Android {serial}: {msg}")
+                    if success:
+                        messagebox.showinfo("Cài đặt thành công", f"Đã cài đặt app test lên {serial} thành công!")
+                    else:
+                        messagebox.showerror("Cài đặt thất bại", f"Lỗi: {msg}")
+                elif kind == "android_erase_done":
+                    serial, success, msg = event[1]
+                    self._set_busy(False, msg)
+                    self._append_log(f"Erase Android {serial}: {msg}")
+                    self.refresh_android_devices()
+                    if success:
+                        messagebox.showinfo("Format Android", f"Đã gửi lệnh khôi phục cài đặt gốc cho {serial} thành công!")
+                    else:
+                        messagebox.showerror("Format Android thất bại", f"Lỗi: {msg}")
                 elif kind == "auto_erase_done":
                     udid, result = event[1], event[2]
                     if result.success:
@@ -1513,4 +1902,5 @@ class IPhoneActivationApp(tk.Tk):
     def _auto_refresh(self) -> None:
         if not self.busy:
             self.refresh_devices()
+            self.refresh_android_devices()
         self.after(3000, self._auto_refresh)
