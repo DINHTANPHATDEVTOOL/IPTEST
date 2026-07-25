@@ -31,6 +31,9 @@ def discover_android_devices() -> list[AndroidDeviceInfo]:
     if not check_adb_installed():
         return devices
 
+    # Reset transport connection to wake up offline or unresponsive devices
+    run_adb(["reconnect"])
+
     res = run_adb(["devices"])
     if not res or res.returncode != 0:
         return devices
