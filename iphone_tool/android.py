@@ -82,10 +82,18 @@ def bypass_android_setup(serial: str) -> tuple[bool, str]:
     p_res = run_adb(["-s", serial, "shell", "settings", "put", "global", "device_provisioned", "1"])
     u_res = run_adb(["-s", serial, "shell", "settings", "put", "secure", "user_setup_complete", "1"])
     
+    p_ok = p_res and p_res.returncode == 0 and "error" not in p_res.combined.lower()
+    u_ok = u_res and u_res.returncode == 0 and "error" not in u_res.combined.lower()
+    
     if p_res:
         output_log.append(f"device_provisioned: {p_res.combined.strip()}")
+    else:
+        output_log.append("device_provisioned: Không có phản hồi từ ADB")
+        
     if u_res:
         output_log.append(f"user_setup_complete: {u_res.combined.strip()}")
+    else:
+        output_log.append("user_setup_complete: Không có phản hồi từ ADB")
 
     # 2. Try disabling common setup wizard packages
     wizards = [
@@ -100,16 +108,31 @@ def bypass_android_setup(serial: str) -> tuple[bool, str]:
     disabled_any = False
     for wizard in wizards:
         dis_res = run_adb(["-s", serial, "shell", "pm", "disable-user", wizard])
-        if dis_res and dis_res.returncode == 0:
+        if dis_res and dis_res.returncode == 0 and "error" not in dis_res.combined.lower():
             disabled_any = True
             output_log.append(f"Tắt thành công: {wizard}")
             
     combined_log = "\n".join(output_log)
+    
+    if not p_ok or not u_ok:
+        # Check if the device is unauthorized
+        dev_res = run_command(["adb", "devices"], timeout=10, check=False)
+        is_unauthorized = False
+        if dev_res:
+            for line in dev_res.stdout.splitlines():
+                if serial in line and "unauthorized" in line:
+                    is_unauthorized = True
+                    break
+        
+        if is_unauthorized:
+            return (False, f"Thiết bị chưa được ủy quyền (unauthorized)!\nVui lòng nhấn 'Cho phép gỡ lỗi USB' (Allow USB Debugging) trên màn hình điện thoại rồi thử lại.\n{combined_log}")
+        return (False, f"Lỗi kích hoạt (lệnh settings put thất bại hoặc lỗi kết nối):\n{combined_log}")
+        
     return (True, f"Kích hoạt thành công!\n{combined_log}")
 
 def install_apk(serial: str, apk_path: str) -> tuple[bool, str]:
     res = run_adb(["-s", serial, "install", "-r", apk_path])
-    if res and res.returncode == 0:
+    if res and res.returncode == 0 and "error" not in res.combined.lower():
         return (True, "Cài đặt ứng dụng test (.apk) thành công!")
     return (False, f"Cài đặt thất bại:\n{res.combined if res else 'Không kết nối được adb'}")
 
@@ -117,6 +140,6 @@ def erase_android(serial: str) -> tuple[bool, str]:
     # Standard factory reset command via ADB: reboot to recovery and perform factory reset, or send recovery command
     # adb reboot recovery is the most standard without root
     res = run_adb(["-s", serial, "reboot", "recovery"])
-    if res and res.returncode == 0:
+    if res and res.returncode == 0 and "error" not in res.combined.lower():
         return (True, "Đã gửi lệnh khởi động vào Chế độ khôi phục (Recovery). Thiết bị sẽ tự động reset.")
-    return (False, "Gửi lệnh Erase thất bại.")
+    return (False, f"Gửi lệnh Erase thất bại:\n{res.combined if res else 'Không kết nối được adb'}")
