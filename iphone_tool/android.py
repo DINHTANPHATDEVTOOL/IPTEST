@@ -191,13 +191,31 @@ def enable_samsung_adb() -> tuple[bool, str]:
             continue
             
         try:
+            # Explicitly toggle DTR and RTS which is required for some USB modems to transmit data
+            ser.dtr = True
+            ser.rts = True
+            time.sleep(0.2)
+            
             ser.reset_input_buffer()
             ser.reset_output_buffer()
             
-            # Send initial AT command
-            ser.write(b"AT\r\n")
-            time.sleep(0.1)
-            resp = ser.read(100).decode('utf-8', errors='ignore')
+            # Try to send AT command up to 4 times to wake up the port / detect baudrate
+            resp = ""
+            for i in range(4):
+                ser.write(b"AT\r\n")
+                time.sleep(0.2)
+                if ser.in_waiting > 0:
+                    resp = ser.read(ser.in_waiting).decode('utf-8', errors='ignore')
+                    if "OK" in resp:
+                        break
+                        
+            if "OK" not in resp:
+                # Try sending with just \r
+                ser.write(b"AT\r")
+                time.sleep(0.25)
+                if ser.in_waiting > 0:
+                    resp = ser.read(ser.in_waiting).decode('utf-8', errors='ignore')
+            
             if "OK" not in resp:
                 logs.append(f"Cổng {port} không phản hồi OK với lệnh AT (Nhận được: {resp.strip()})")
                 ser.close()
@@ -207,8 +225,11 @@ def enable_samsung_adb() -> tuple[bool, str]:
             
             for cmd in commands[1:]:
                 ser.write(f"{cmd}\r\n".encode())
-                time.sleep(0.15)
-                resp = ser.read(200).decode('utf-8', errors='ignore')
+                time.sleep(0.2)
+                if ser.in_waiting > 0:
+                    resp = ser.read(ser.in_waiting).decode('utf-8', errors='ignore')
+                else:
+                    resp = ""
                 clean_resp = resp.strip().replace('\r', ' ').replace('\n', ' ')
                 logs.append(f"Gửi: {cmd} -> Nhận: {clean_resp}")
                 
