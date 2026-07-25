@@ -76,9 +76,69 @@ def discover_android_devices() -> list[AndroidDeviceInfo]:
     return devices
 
 def bypass_android_setup(serial: str) -> tuple[bool, str]:
+    import json
     output_log = []
     
-    # 1. Set provisioned & setup complete states
+    # 1. Try Trade-in Mode (Android 16+) first
+    output_log.append("Đang kiểm tra hỗ trợ Android 16 Trade-in Mode...")
+    t_status = run_adb(["-s", serial, "shell", "tradeinmode", "wait-until-ready", "getstatus"])
+    
+    trade_in_supported = False
+    frp_locked = False
+    
+    if t_status and t_status.returncode == 0:
+        stdout_clean = t_status.stdout.strip()
+        try:
+            status_data = json.loads(stdout_clean)
+            output_log.append(f"Trạng thái Trade-in Mode: {stdout_clean}")
+            trade_in_supported = True
+            
+            # Check for FRP lock status
+            locks = status_data.get("locks", {})
+            if isinstance(locks, dict):
+                frp_locked = locks.get("factory_reset_protection", False)
+            else:
+                frp_locked = False
+                
+            if frp_locked:
+                output_log.append("Cảnh báo: Thiết bị bị khóa FRP (Factory Reset Protection)! Không thể dùng Trade-in Mode.")
+        except Exception as e:
+            output_log.append(f"Không thể parse JSON trạng thái Trade-in Mode: {e}")
+            if "factory_reset_protection" in stdout_clean.lower():
+                trade_in_supported = True
+                if '"factory_reset_protection": true' in stdout_clean.replace(" ", "").lower():
+                    frp_locked = True
+                    output_log.append("Cảnh báo: Phát hiện thiết bị bị khóa FRP qua chuỗi text.")
+            
+    if trade_in_supported and not frp_locked:
+        output_log.append("Thiết bị hỗ trợ Trade-in Mode. Bắt đầu chạy evaluate...")
+        t_eval = run_adb(["-s", serial, "shell", "tradeinmode", "wait-until-ready", "evaluate"])
+        if t_eval:
+            output_log.append(f"tradeinmode evaluate: {t_eval.combined.strip()}")
+            if t_eval.returncode == 0 and "error" not in t_eval.combined.lower():
+                output_log.append("Kích hoạt Trade-in Mode hoàn tất. Đang kiểm tra trạng thái Provisioned...")
+                
+                p_res = run_adb(["-s", serial, "shell", "settings", "get", "global", "device_provisioned"])
+                u_res = run_adb(["-s", serial, "shell", "settings", "get", "secure", "user_setup_complete"])
+                
+                p_val = p_res.stdout.strip() if p_res else ""
+                u_val = u_res.stdout.strip() if u_res else ""
+                output_log.append(f"device_provisioned = {p_val}")
+                output_log.append(f"user_setup_complete = {u_val}")
+                
+                if p_val == "1" or u_val == "1":
+                    combined_log = "\n".join(output_log)
+                    return (True, f"Kích hoạt Android 16 Trade-in Mode thành công!\n{combined_log}")
+                else:
+                    output_log.append("Trạng thái provisioned chưa đạt 1. Thử ghi đè trực tiếp qua adb shell settings put...")
+            else:
+                output_log.append("Lỗi khi chạy lệnh tradeinmode evaluate.")
+        else:
+            output_log.append("Không nhận được phản hồi từ lệnh tradeinmode evaluate.")
+            
+    # 2. Fallback to legacy settings put method
+    output_log.append("Chuyển sang phương án dự phòng (Legacy Setup Bypass)...")
+    
     p_res = run_adb(["-s", serial, "shell", "settings", "put", "global", "device_provisioned", "1"])
     u_res = run_adb(["-s", serial, "shell", "settings", "put", "secure", "user_setup_complete", "1"])
     
@@ -95,7 +155,7 @@ def bypass_android_setup(serial: str) -> tuple[bool, str]:
     else:
         output_log.append("user_setup_complete: Không có phản hồi từ ADB")
 
-    # 2. Try disabling common setup wizard packages
+    # Try disabling common setup wizard packages
     wizards = [
         "com.google.android.setupwizard",
         "com.sec.android.app.setupwizard",  # Samsung
@@ -128,7 +188,8 @@ def bypass_android_setup(serial: str) -> tuple[bool, str]:
             return (False, f"Thiết bị chưa được ủy quyền (unauthorized)!\nVui lòng nhấn 'Cho phép gỡ lỗi USB' (Allow USB Debugging) trên màn hình điện thoại rồi thử lại.\n{combined_log}")
         return (False, f"Lỗi kích hoạt (lệnh settings put thất bại hoặc lỗi kết nối):\n{combined_log}")
         
-    return (True, f"Kích hoạt thành công!\n{combined_log}")
+    return (True, f"Kích hoạt thành công (Legacy)!\n{combined_log}")
+
 
 def install_apk(serial: str, apk_path: str) -> tuple[bool, str]:
     res = run_adb(["-s", serial, "install", "-r", apk_path])
