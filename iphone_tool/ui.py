@@ -1124,11 +1124,14 @@ class IPhoneActivationApp(tk.Tk):
         self.android_refresh_btn = self._create_btn(android_controls, "Quét lại Android", "#475569", "#334155", self.refresh_android_devices)
         self.android_refresh_btn.pack(side="left")
         
+        self.android_enable_adb_btn = self._create_btn(android_controls, "Bật ADB Samsung (*#0*#)", "#8b5cf6", "#7c3aed", self.start_samsung_adb_enable)
+        self.android_enable_adb_btn.pack(side="left", padx=10)
+        
         self.android_activate_btn = self._create_btn(android_controls, "Active/Bypass Setup", "#2563eb", "#1d4ed8", self.start_android_bypass, state="disabled")
-        self.android_activate_btn.pack(side="left", padx=10)
+        self.android_activate_btn.pack(side="left")
         
         self.android_install_app_btn = self._create_btn(android_controls, "Cài App Test (.apk)", "#10b981", "#059669", self.start_android_install, state="disabled")
-        self.android_install_app_btn.pack(side="left", padx=(0, 10))
+        self.android_install_app_btn.pack(side="left", padx=10)
         
         self.android_erase_btn = self._create_btn(android_controls, "Erase về cài đặt gốc", "#dc2626", "#b91c1c", self.start_android_erase, state="disabled")
         self.android_erase_btn.pack(side="left")
@@ -1650,6 +1653,25 @@ class IPhoneActivationApp(tk.Tk):
             self.events.put(("android_discover_done", devices))
         except Exception as exc:
             self.events.put(("error", f"Lỗi quét thiết bị Android: {exc}"))
+
+    def start_samsung_adb_enable(self) -> None:
+        self._set_busy(True, "Đang kết nối cổng Serial/Modem để kích hoạt ADB...")
+        self._append_log("Bắt đầu kích hoạt ADB Samsung (yêu cầu điện thoại ở màn hình *#0*#)")
+        
+        def worker() -> None:
+            try:
+                from .android import enable_samsung_adb
+                success, msg = enable_samsung_adb()
+                if success:
+                    self.events.put(("log", f"Bật ADB Samsung: {msg}"))
+                    self.events.put(("operation_success", f"Bật ADB Samsung thành công!\n{msg}"))
+                else:
+                    self.events.put(("log", f"Lỗi Bật ADB Samsung: {msg}"))
+                    self.events.put(("operation_error", f"Kích hoạt thất bại!\n{msg}"))
+            except Exception as e:
+                self.events.put(("error", f"Lỗi kích hoạt ADB: {e}"))
+                
+        threading.Thread(target=worker, daemon=True).start()
 
     def start_android_bypass(self) -> None:
         serials = list(self.android_tree.selection())

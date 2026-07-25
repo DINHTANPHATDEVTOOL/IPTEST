@@ -143,3 +143,86 @@ def erase_android(serial: str) -> tuple[bool, str]:
     if res and res.returncode == 0 and "error" not in res.combined.lower():
         return (True, "Đã gửi lệnh khởi động vào Chế độ khôi phục (Recovery). Thiết bị sẽ tự động reset.")
     return (False, f"Gửi lệnh Erase thất bại:\n{res.combined if res else 'Không kết nối được adb'}")
+
+def enable_samsung_adb() -> tuple[bool, str]:
+    import time
+    try:
+        import serial
+        import serial.tools.list_ports
+    except ImportError:
+        return (False, "Thư viện pyserial chưa được cài đặt. Vui lòng cài đặt bằng: pip install pyserial")
+
+    ports = []
+    for port in serial.tools.list_ports.comports():
+        desc = (port.description or "").lower()
+        mfg = (port.manufacturer or "").lower()
+        # Look for SAMSUNG or USB modem serial devices
+        if "samsung" in desc or "samsung" in mfg or "acm" in port.device.lower() or "usb" in port.device.lower():
+            ports.append(port.device)
+            
+    if not ports:
+        import glob
+        ports = glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*")
+        
+    ports = sorted(list(set(ports)))
+    if not ports:
+        return (False, "Không tìm thấy cổng serial/modem nào của điện thoại. Hãy chắc chắn máy đã cắm cáp và ở màn hình Test Mode (*#0*#).")
+
+    logs = []
+    success = False
+    
+    # AT command sequence to enable ADB via Test Mode
+    commands = [
+        "AT",
+        "AT+SWATD=0",
+        "AT+ACTIVATE=0,0,0",
+        "AT+SWATD=1",
+        "AT+KSTRINGB=0,3",
+        "AT+DUMPCTRL=1,0",
+        "AT+DEBUGLVC=0,5"
+    ]
+    
+    for port in ports:
+        logs.append(f"Thử cổng: {port}")
+        try:
+            ser = serial.Serial(port, baudrate=115200, timeout=1.0, write_timeout=1.0)
+        except Exception as e:
+            logs.append(f"Không thể mở cổng {port}: {e}")
+            continue
+            
+        try:
+            ser.reset_input_buffer()
+            ser.reset_output_buffer()
+            
+            # Send initial AT command
+            ser.write(b"AT\r\n")
+            time.sleep(0.1)
+            resp = ser.read(100).decode('utf-8', errors='ignore')
+            if "OK" not in resp:
+                logs.append(f"Cổng {port} không phản hồi OK với lệnh AT (Nhận được: {resp.strip()})")
+                ser.close()
+                continue
+                
+            logs.append(f"Phát hiện modem phản hồi tại {port}. Bắt đầu gửi chuỗi lệnh kích hoạt ADB...")
+            
+            for cmd in commands[1:]:
+                ser.write(f"{cmd}\r\n".encode())
+                time.sleep(0.15)
+                resp = ser.read(200).decode('utf-8', errors='ignore')
+                logs.append(f"Gửi: {cmd} -> Nhận: {resp.strip().replace('\r', ' ').replace('\n', ' ')}")
+                
+            success = True
+            ser.close()
+            break
+        except Exception as e:
+            logs.append(f"Lỗi khi truyền dữ liệu qua {port}: {e}")
+            try:
+                ser.close()
+            except Exception:
+                pass
+
+    log_str = "\n".join(logs)
+    if success:
+        return (True, f"Đã gửi lệnh kích hoạt ADB thành công qua cổng serial.\nVui lòng xem trên màn hình điện thoại và nhấn 'Cho phép gỡ lỗi USB'!\n\nChi tiết phản hồi:\n{log_str}")
+    else:
+        return (False, f"Không thể kích hoạt ADB qua cổng serial.\nHãy đảm bảo điện thoại đã được mở màn hình Test Mode (*#0*#) bằng cách vào Cuộc gọi khẩn cấp.\n\nNhật ký thử nghiệm:\n{log_str}")
