@@ -144,6 +144,22 @@ def erase_android(serial: str) -> tuple[bool, str]:
         return (True, "Đã gửi lệnh khởi động vào Chế độ khôi phục (Recovery). Thiết bị sẽ tự động reset.")
     return (False, f"Gửi lệnh Erase thất bại:\n{res.combined if res else 'Không kết nối được adb'}")
 
+def send_at_cmd(ser, cmd: str, timeout: float = 1.5) -> str:
+    import time
+    ser.reset_input_buffer()
+    ser.write(f"{cmd}\r\n".encode())
+    
+    start_time = time.time()
+    response = ""
+    while time.time() - start_time < timeout:
+        if ser.in_waiting > 0:
+            chunk = ser.read(ser.in_waiting).decode('utf-8', errors='ignore')
+            response += chunk
+            if "OK" in response or "ERROR" in response:
+                break
+        time.sleep(0.05)
+    return response
+
 def enable_samsung_adb() -> tuple[bool, str]:
     import time
     try:
@@ -156,7 +172,6 @@ def enable_samsung_adb() -> tuple[bool, str]:
     for port in serial.tools.list_ports.comports():
         desc = (port.description or "").lower()
         mfg = (port.manufacturer or "").lower()
-        # Look for SAMSUNG or USB modem serial devices
         if "samsung" in desc or "samsung" in mfg or "acm" in port.device.lower() or "usb" in port.device.lower():
             ports.append(port.device)
             
@@ -196,26 +211,14 @@ def enable_samsung_adb() -> tuple[bool, str]:
             ser.rts = True
             time.sleep(0.2)
             
-            ser.reset_input_buffer()
-            ser.reset_output_buffer()
-            
-            # Try to send AT command up to 4 times to wake up the port / detect baudrate
+            # Send initial AT command to wake up the port / detect baudrate
             resp = ""
-            for i in range(4):
-                ser.write(b"AT\r\n")
-                time.sleep(0.2)
-                if ser.in_waiting > 0:
-                    resp = ser.read(ser.in_waiting).decode('utf-8', errors='ignore')
-                    if "OK" in resp:
-                        break
-                        
-            if "OK" not in resp:
-                # Try sending with just \r
-                ser.write(b"AT\r")
-                time.sleep(0.25)
-                if ser.in_waiting > 0:
-                    resp = ser.read(ser.in_waiting).decode('utf-8', errors='ignore')
-            
+            for retry in range(3):
+                resp = send_at_cmd(ser, "AT", timeout=1.0)
+                if "OK" in resp:
+                    break
+                time.sleep(0.1)
+                
             if "OK" not in resp:
                 logs.append(f"Cổng {port} không phản hồi OK với lệnh AT (Nhận được: {resp.strip()})")
                 ser.close()
@@ -224,12 +227,7 @@ def enable_samsung_adb() -> tuple[bool, str]:
             logs.append(f"Phát hiện modem phản hồi tại {port}. Bắt đầu gửi chuỗi lệnh kích hoạt ADB...")
             
             for cmd in commands[1:]:
-                ser.write(f"{cmd}\r\n".encode())
-                time.sleep(0.2)
-                if ser.in_waiting > 0:
-                    resp = ser.read(ser.in_waiting).decode('utf-8', errors='ignore')
-                else:
-                    resp = ""
+                resp = send_at_cmd(ser, cmd, timeout=1.5)
                 clean_resp = resp.strip().replace('\r', ' ').replace('\n', ' ')
                 logs.append(f"Gửi: {cmd} -> Nhận: {clean_resp}")
                 
