@@ -1,0 +1,30 @@
+name: ios_self_test_app
+description: "iPhone Hardware Diagnostic Test Suite"
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.6
+  camera: ^0.10.5+9
+  audioplayers: ^6.0.0
+  sensors_plus: ^6.0.0
+  vibration: ^2.0.0
+  local_auth: ^2.2.0
+  http: ^1.2.0
+  shared_preferences: ^2.2.0
+  device_info_plus: ^10.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true

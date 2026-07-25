@@ -1,0 +1,50 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Flutter / Dart
+ios_self_test_flutter/.dart_tool/
+ios_self_test_flutter/build/
+ios_self_test_flutter/.packages
+ios_self_test_flutter/.pub-cache/
+ios_self_test_flutter/.pub/
+ios_self_test_flutter/ios/.symlinks/
+ios_self_test_flutter/ios/Pods/
+ios_self_test_flutter/ios/Podfile.lock
+ios_self_test_flutter/ios/Flutter/Flutter.podspec
+ios_self_test_flutter/ios/Flutter/Generated.xcconfig
+ios_self_test_flutter/ios/Flutter/flutter_export_environment.sh
+
+# IDEs
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS
+.DS_Store
+Thumbs.db
