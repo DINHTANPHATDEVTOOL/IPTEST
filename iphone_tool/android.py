@@ -209,7 +209,8 @@ def enable_samsung_adb() -> tuple[bool, str]:
                 ser.write(f"{cmd}\r\n".encode())
                 time.sleep(0.15)
                 resp = ser.read(200).decode('utf-8', errors='ignore')
-                logs.append(f"Gửi: {cmd} -> Nhận: {resp.strip().replace('\r', ' ').replace('\n', ' ')}")
+                clean_resp = resp.strip().replace('\r', ' ').replace('\n', ' ')
+                logs.append(f"Gửi: {cmd} -> Nhận: {clean_resp}")
                 
             success = True
             ser.close()
